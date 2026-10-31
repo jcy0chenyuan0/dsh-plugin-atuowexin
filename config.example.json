@@ -1,0 +1,37 @@
+{
+  "#说明": "复制成 config.json 后按需改写；本插件只读，不需要任何 API key。workdir 留空 = 自动使用 %USERPROFILE%\\.atuowexin\\data，也可用 ATUOWEXIN_WORKDIR 覆盖。",
+  "workdir": "",
+  "backend": {
+    "name": "auto",
+    "chatlog": {
+      "base_url": "http://127.0.0.1:5030",
+      "timeout": 30.0,
+      "page_size": 500,
+      "auth_key": ""
+    },
+    "decrypted_sqlite": {
+      "root": "<已解密数据目录，例如 db_storage 的父目录>",
+      "schema": "auto",
+      "self_wxid": ""
+    },
+    "mock": {
+      "conversations": 3,
+      "messages_per": 25,
+      "days": 30,
+      "seed": 7
+    }
+  },
+  "extract": {
+    "page_size": 500,
+    "max_messages_per_conversation": 0,
+    "write_workspace_jsonl": true,
+    "include_media": true,
+    "media_download": false,
+    "conversations": []
+  },
+  "privacy": {
+    "redact_phone": true,
+    "redact_id_card": true,
+    "redact_bank_card": true
+  }
+}

@@ -1,0 +1,16 @@
+# 统一换行，避免跨机器 checkout 后脚本行为不一致
+* text=auto
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.ipynb text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.ps1 text eol=crlf
+*.svg text eol=lf
+*.pdf binary
+*.png binary
+*.ico binary
+*.tgz binary

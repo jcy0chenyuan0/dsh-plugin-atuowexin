@@ -1,0 +1,46 @@
+{
+  "name": "dsh-plugin-atuowexin",
+  "version": "0.5.0",
+  "private": true,
+  "description": "微信本地聊天记录只读摘录插件（DSH bundle）：解密 → 完整摘录 → 会话隔离 → 导出。不含发送、注入、云端模型。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "engine/atuowexin",
+    "cordis.patch.yml",
+    "config.example.json",
+    "README.md",
+    "cordis.patch.yml.tpl",
+    "install.ps1",
+    "install.mjs",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "dsh-bundle",
+    "wechat",
+    "chatlog",
+    "export",
+    "readonly"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jcy0chenyuan0/dsh-plugin-atuowexin.git"
+  },
+  "homepage": "https://github.com/jcy0chenyuan0/dsh-plugin-atuowexin#readme",
+  "bugs": {
+    "url": "https://github.com/jcy0chenyuan0/dsh-plugin-atuowexin/issues"
+  }
+}

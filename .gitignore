@@ -1,0 +1,23 @@
+# 本机生成（install.ps1 / install.mjs 按当前目录渲染）
+cordis.patch.yml
+
+# 本地配置与私有数据（绝不要提交）
+config.json
+data/
+selftest.json
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Node
+node_modules/
+
+# 构建产物
+dist/
+out/
+*.tgz
+.tmp/
