@@ -21,3 +21,6 @@ dist/
 out/
 *.tgz
 .tmp/
+
+# 环境自举状态（本机）
+.bootstrap-state.json

@@ -13,6 +13,11 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:f
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+
+
+// 测试不拉起环境安装子进程
+process.env.DSH_BOOTSTRAP = "0";
+
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN = pathToFileURL(join(PACKAGE_ROOT, "lib", "index.js")).href;
 const WORKDIR = join(PACKAGE_ROOT, ".tmp", "dsh-plugin-work");

@@ -9,11 +9,14 @@
 # 可选参数：
 #     -Profile desktop   只影响提示文字
 #     -Quiet             只生成文件，不打印说明
+#     -CheckOnly         只检查环境，不自动安装（默认会静默安装缺失环境）
 
 [CmdletBinding()]
 param(
     [string]$Profile = "desktop",
-    [switch]$Quiet
+    [switch]$Quiet,
+    [switch]$AutoInstall,
+    [switch]$CheckOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,6 +50,16 @@ $text = $text.Replace('{{WORKDIR}}', $workdir)
 $text = $text.Replace('{{CONFIG}}', $config)
 Write-Utf8NoBom $out $text
 Write-Host "[ok] 已生成：$out"
+
+# 环境自检：默认静默安装缺失环境；-CheckOnly 只检查
+$bootstrap = Join-Path $root "bootstrap.ps1"
+if (Test-Path $bootstrap) {
+    try {
+        & $bootstrap -CheckOnly:$CheckOnly -Quiet:$Quiet
+    } catch {
+        Write-Warning "环境检查失败：$($_.Exception.Message)"
+    }
+}
 
 if ($Quiet) { return }
 
