@@ -274,6 +274,34 @@ def _first(pattern: re.Pattern[str], text: str) -> str:
 	return strip_markup(match.group(1))
 
 
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]{2,}")
+_WXID_RE = re.compile(r"\bwxid_[0-9a-zA-Z]{6,}\b")
+_PLATE_RE = re.compile(r"[\u4e00-\u9fa5][A-HJ-NP-Z][A-HJ-NP-Z0-9]{4,5}[A-HJ-NP-Z0-9\u6302\u5b66\u8b66\u6e2f\u6fb3]")
+
+
+def redact_pii(
+	text: str,
+	*,
+	phone: bool = True,
+	id_card: bool = True,
+	bank_card: bool = True,
+	email: bool = True,
+	wxid: bool = True,
+	plate: bool = True,
+) -> str:
+	"""更强的脱敏：在 redact 基础上再抹掉邮箱、wxid、车牌（降险，不是匿名保证）。"""
+	value = redact(text, phone=phone, id_card=id_card, bank_card=bank_card)
+	if not value:
+		return value
+	if email:
+		value = _EMAIL_RE.sub(lambda m: m.group(0).split("@")[0][:2] + "***@***", value)
+	if wxid:
+		value = _WXID_RE.sub("wxid_***", value)
+	if plate:
+		value = _PLATE_RE.sub(lambda m: m.group(0)[:2] + "***" + m.group(0)[-1], value)
+	return value
+
+
 def redact(text: str, *, phone: bool = True, id_card: bool = True, bank_card: bool = True) -> str:
 	"""脱敏：把手机号/身份证/银行卡号替换成占位符。
 

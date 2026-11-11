@@ -149,6 +149,20 @@ def build_parser() -> argparse.ArgumentParser:
 	deps_parser.add_argument("action", nargs="?", choices=["status", "install", "dir"], default="status")
 	deps_parser.add_argument("package", nargs="*", help="要安装的组件（zstandard / pillow），默认全部")
 
+	wx_parser = sub.add_parser("wx", help="核心六动作：check / locate / close / hook / list / read（只读聊天记录）", parents=[common])
+	wx_parser.add_argument("action", choices=["check", "locate", "close", "hook", "list", "read", "decrypt", "unread"])
+	wx_parser.add_argument("--root", default="", help="账号目录或 db_storage（locate/hook 用）")
+	wx_parser.add_argument("--scan", type=float, default=300.0, help="hook 扫描窗口秒数（默认 300）")
+	wx_parser.add_argument("--conversation", action="append", default=[], help="read 用：会话名或 id，可重复")
+	wx_parser.add_argument("--query", default="", help="list 用：按名字过滤")
+	wx_parser.add_argument("--limit", type=int, default=200, help="list/read 的条数上限")
+	wx_parser.add_argument("--seconds", type=float, default=180.0, help="decrypt 用：Frida 抓候选的等待秒数（默认 180）")
+	wx_parser.add_argument("--out-dir", dest="out_dir", default="", help="decrypt 用：解密产物目录")
+	wx_parser.add_argument("--decrypted-dir", dest="decrypted_dir", default="", help="unread 用：解密产物目录（默认自动找）")
+	wx_parser.add_argument("--redacted", action="store_true", help="read/unread 用：对正文做 PII 脱敏（手机/证件/卡/邮箱/wxid/车牌）")
+	wx_parser.add_argument("--since", default="", help="read 用：起始时间")
+	wx_parser.add_argument("--until", default="", help="read 用：结束时间")
+
 	key_parser = sub.add_parser("key", help="密钥工具：校验、扫描或显式启动期捕获解密密钥", parents=[common])
 	key_parser.add_argument(
 		"action",
@@ -787,7 +801,66 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 	return EXIT_OK if report.ok else EXIT_ERROR
 
 
+def cmd_wx(args: argparse.Namespace) -> int:
+	"""核心六动作：只读聊天记录。"""
+	from . import wxtool
+
+	if args.action == "check":
+		payload = wxtool.check()
+	elif args.action == "locate":
+		payload = wxtool.locate(args.root)
+	elif args.action == "close":
+		payload = wxtool.close()
+	elif args.action == "hook":
+		root = args.root or (wxtool.locate("").get("account") or "")
+		payload = wxtool.hook(root, scan_seconds=args.scan, workdir=_load_config(args).get("workdir"))
+	elif args.action == "list":
+		payload = wxtool.list_conversations(limit=args.limit, query=args.query)
+	elif args.action == "unread":
+		# 工具 8：只看未读（读解密后的 session.db）
+		payload = wxtool.unread(args.decrypted_dir, limit=args.limit, redacted=args.redacted)
+	elif args.action == "decrypt":
+		# 工具 7：Frida 挂钩 codec 配置函数取密钥 -> 判定 passphrase -> 整库解密
+		from . import keyfrida
+
+		if wxtool.autopilot.wechat_running():
+			raise CliError("微信正在运行：Frida 需要 spawn 新进程，请先调用 wx close")
+		account = wxtool.locate("")
+		if not account.get("found"):
+			raise CliError(account.get("hint") or "找不到聊天记录目录")
+		db_root = account["db_storage"]
+		capture_dir = Path(_load_config(args).get("workdir") or paths.default_workdir()) / "keys"
+		cap = keyfrida.capture(args.seconds, out_dir=capture_dir, on_log=lambda m: sys.stderr.write(m + "\n"))
+		if not cap.get("ok"):
+			_emit(args, {"ok": False, "stage": "capture", "detail": cap}, "没抓到候选：%s" % cap.get("error", ""))
+			return EXIT_ERROR
+		rec = keyfrida.recover(cap["hits"], db_root)
+		if not rec.get("ok"):
+			_emit(args, {"ok": False, "stage": "recover", "detail": rec, "capture": cap}, "候选 %d 个，但没有验证出可用密钥" % rec.get("candidates", 0))
+			return EXIT_ERROR
+		out_dir = Path(args.out_dir) if args.out_dir else Path(db_root).parent.parent / "decrypted_local"
+		dec = keyfrida.decrypt_all(db_root, rec["keys"], out_dir)
+		payload = {"ok": dec.get("ok"), "stage": "decrypted", "capture": cap, "recover": {"passphrase": rec.get("passphrase"), "matched": rec.get("matched"), "databases": rec.get("databases")}, "decrypt": dec}
+		_emit(args, payload, "解密 %d/%d 个库 -> %s" % (dec.get("decrypted", 0), dec.get("total", 0), out_dir))
+		return EXIT_OK if dec.get("ok") else EXIT_ERROR
+	elif args.action == "read":
+		names = args.conversation or []
+		if not names:
+			raise CliError("read 需要 --conversation <会话名>（可重复）")
+		payload = wxtool.read_conversations(names, since=parse_time(args.since), until=parse_time(args.until), limit=args.limit, redacted=args.redacted)
+	else:  # pragma: no cover
+		raise CliError("未知动作：%s" % args.action)
+
+	_emit(args, payload, json.dumps(payload, ensure_ascii=False))
+	if payload.get("found") is False or payload.get("closed") is False:
+		return EXIT_ERROR
+	if payload.get("installed") is False:
+		return EXIT_ERROR
+	return EXIT_OK
+
+
 COMMANDS = {
+	"wx": cmd_wx,
 	"doctor": cmd_doctor,
 	"config": cmd_config,
 	"sync": cmd_sync,

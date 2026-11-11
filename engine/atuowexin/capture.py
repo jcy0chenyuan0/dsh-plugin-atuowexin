@@ -136,11 +136,14 @@ def _capture_script() -> Path:
 
 
 def _reference_root() -> Path:
-	"""参考工具目录，可由环境变量覆盖。"""
+	"""原生依赖目录：默认就是插件自带的 engine/tools（dll + node_modules）。
+
+	外部参考工具可用环境变量覆盖；插件现在自包含，删掉外部工具也能跑。
+	"""
 	configured = os.environ.get("ATUOWEXIN_WECHAT_EXPORT_TOOL")
 	if configured:
 		return Path(configured).expanduser()
-	return Path(r"C:\project\python\WeChat-Export-Tool")
+	return Path(__file__).resolve().parents[1] / "tools"
 
 
 def default_dll_path() -> Path:
@@ -196,7 +199,7 @@ def _koffi_cwd_candidates(node_cwd: str | Path | None = None) -> list[Path | Non
 	items: list[Path | None] = []
 	if node_cwd:
 		items.append(Path(node_cwd).expanduser())
-	items.extend((_plugin_root(), _reference_root(), _reference_root() / "scripts", _capture_script().parent))
+	items.extend((_plugin_root(), _plugin_root() / "engine" / "tools", _capture_script().parent, _reference_root(), _reference_root() / "scripts"))
 	items.append(None)
 	seen: set[str] = set()
 	result: list[Path | None] = []

@@ -37,11 +37,20 @@ from ..model import Conversation, Message, classify, normalize_ts
 from .base import BackendError, media_refs_from_xml
 
 #: 参考工具的默认位置（可用配置覆盖）。
-_DEFAULT_REFERENCE = Path(r"C:\project\python\WeChat-Export-Tool")
+#: 参考工具默认位置：现在插件自带，指向自身；外部布局可用环境变量/配置覆盖。
+_DEFAULT_REFERENCE = Path(__file__).resolve().parents[2] / "tools"
 _DEFAULT_NODE = Path(r"C:\Program Files\nodejs\node.exe")
+_LOCAL_TOOLS = Path(__file__).resolve().parents[2] / "tools"
 _DEFAULT_KEY_FILES = (
-	Path.home() / "Desktop" / "wx_export" / "key.txt",
+	Path.home() / ".atuowexin" / "data" / "capture" / "key.txt",
+	Path.home() / ".dsh" / "plugins" / "atuowexin" / "data" / "capture" / "key.txt",
 )
+
+
+def _default_script() -> Path:
+	"""脚本优先用插件自带的 engine/tools/wcdb_server.js。"""
+	local = _LOCAL_TOOLS / "wcdb_server.js"
+	return local if local.is_file() else _DEFAULT_REFERENCE / "scripts" / "wcdb_server.js"
 
 
 def _default_data_dir() -> Path | None:
@@ -79,7 +88,7 @@ class WcdbBackend:
 	def __init__(self, settings: dict[str, Any] | None = None) -> None:
 		settings = dict(settings or {})
 		self.reference_root = Path(settings.get("reference_root") or _DEFAULT_REFERENCE)
-		self.script = Path(settings.get("script") or self.reference_root / "scripts" / "wcdb_server.js")
+		self.script = Path(settings.get("script") or _default_script())
 		self.data_dir = Path(str(settings.get("data_dir"))).expanduser() if settings.get("data_dir") else _default_data_dir()
 		self.node = str(settings.get("node") or _DEFAULT_NODE)
 		self.key = str(settings.get("key") or "").strip()
@@ -193,7 +202,9 @@ class WcdbBackend:
 			if "OPEN_FAIL" in last:
 				# 微信正在写 -wal，快照可能不一致：稍等再试（实测抓到一致快照就能秒开）
 				time.sleep(2)
-		hint = "；微信运行时快照可能不一致，退出微信后重试最稳" if "OPEN_FAIL" in last else ""
+		hint = ""
+		if "OPEN_FAIL" in last:
+			hint = "；确认微信已启动并登录、保持运行再读（关着或刚启动时 WAL 状态最容易读不出来）"
 		raise BackendError("WCDB 打不开库（%s）%s" % (last, hint))
 
 	def close(self) -> None:
@@ -279,7 +290,9 @@ class WcdbBackend:
 		page = 500
 		offset = 0
 		emitted = 0
-		quoted = urllib.parse.quote(conversation_id, safe="")
+		# 会话 id 含 @（群聊 @chatroom、公众号 gh_）：服务端按原样取路径段，
+		# 编码成 %40 就查不到消息了，所以这些字符必须保持原样。
+		quoted = urllib.parse.quote(conversation_id, safe="@-_.~:+")
 		while True:
 			raw = self._call("messages/%s/%d/%d" % (quoted, page, offset), 300)
 			try:
@@ -298,9 +311,11 @@ class WcdbBackend:
 				emitted += 1
 				if limit and emitted >= limit:
 					return
-			if len(batch) < page:
-				return
+			# 不能因为“本页不满”就停：WCDB 在接近末尾时会返回不足 page 的条数。
+			# 只在空页或超过安全上限时才收工。
 			offset += len(batch)
+			if offset > 200000:
+				return
 
 	def _to_message(self, item, conversation_id):
 		raw_type = _pick(item, "local_type", "type", default=0)

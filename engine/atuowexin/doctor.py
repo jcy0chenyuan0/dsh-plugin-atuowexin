@@ -385,11 +385,11 @@ def _key_check() -> Check:
 
 	hint_parts: list[str] = []
 	hint_parts.append(
-		"跑 `python -m atuowexin key ensure --root <db_storage>`：它**先看有没有 key，缺了才去读**"
-		"（全都有时不碰内存）。"
-	)
+	"一条龙：`python -m atuowexin key auto`（关微信 → 起 Hook → 拉起微信 → 点登录 → 取 key → WCDB 校验）；"
+	"它会在需要你登录时返回 stage=login_required（退出码 3）。"
+)
 	if not processes:
-		hint_parts.append("现在微信没在运行，密钥只存在于进程内存里——先启动并登录微信。")
+		hint_parts.append("现在微信没在运行：先跑 key auto（或手动启动并登录微信后再捕获）。")
 	else:
 		hint_parts.append("微信在运行：缺的通常是本次没被打开过的库，在微信里点开对应功能后再跑一次。")
 	if missing_names:
@@ -403,6 +403,9 @@ def _backend_hint(name: str, item: dict[str, Any]) -> str:
 		return ""
 	if name == "chatlog":
 		return "启动 chatlog（TUI 或 `chatlog server -a 127.0.0.1:5030`），确保微信已登录且库已解密"
+	if name == "wcdb":
+		return ("WCDB 没打开成功：确认 ①微信在运行且已登录（快照要一致）②桌面 wx_export/key.txt 或 backend.wcdb.key 有 64 位 key ③参考工具的 dll/ 与 scripts/node_modules(koffi) 在位；"
+			"必要时先退出微信再重试")
 	if name == "decrypted_sqlite":
 		return "把 backend.decrypted_sqlite.root 指向**已解密**的数据目录（含 db_storage，或 3.x 的 MSG*.db）"
 	if name == "mock":

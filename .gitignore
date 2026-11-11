@@ -24,3 +24,8 @@ out/
 
 # 环境自举状态（本机）
 .bootstrap-state.json
+# 第三方原生依赖与 Python 库（体积大，不进仓库）
+engine/tools/dll/
+engine/tools/node_modules/
+engine/tools/package-lock.json
+engine/pylibs/

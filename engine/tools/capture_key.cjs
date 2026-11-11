@@ -20,9 +20,12 @@ const DLL_DIR = arg('dll', path.join(__dirname, 'dll'));
 const TIMEOUT_MS = parseInt(arg('timeout', '120000'), 10) || 120000;
 const STATUS_FILE = path.join(OUT, 'key_status.txt');
 const KEY_FILE = path.join(OUT, 'key.txt');
+// 每库一把密钥：WCDB 对每个数据库都会调一次 SetDBKey，所以要把每次的 key 都收下来
+const KEYS_FILE = path.join(OUT, 'keys.json');
 fs.mkdirSync(OUT, { recursive: true });
 try { fs.unlinkSync(STATUS_FILE); } catch (e) {}
 try { fs.unlinkSync(KEY_FILE); } catch (e) {}
+try { fs.unlinkSync(KEYS_FILE); } catch (e) {}
 
 function setStatus(s) { try { fs.writeFileSync(STATUS_FILE, s); } catch (e) {} }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -143,8 +146,9 @@ async function main() {
     await sleep(200);
   }
 
-  console.log('[KEY] 等待登录过程中捕获密钥...');
+  console.log('[KEY] 等待登录过程中持续捕获密钥（每库一把，不提前退出）...');
   setStatus('polling');
+  const collected = [];
   const buf = Buffer.alloc(128);
   const start = Date.now();
   while (Date.now() - start < TIMEOUT_MS) {
@@ -152,12 +156,12 @@ async function main() {
     try { hit = api.pollKey(buf, buf.length); } catch (e) {}
     if (hit) {
       const key = buf.toString('ascii').substring(0, 64).toLowerCase();
-      if (/^[0-9a-f]{64}$/.test(key)) {
+      if (/^[0-9a-f]{64}$/.test(key) && collected.indexOf(key) < 0) {
+        collected.push(key);
         fs.writeFileSync(KEY_FILE, key);
-        console.log('[KEY] 成功: ' + key.substring(0, 16) + '...');
-        setStatus('captured');
-        try { api.cleanup(); } catch (e) {}
-        process.exit(0);
+        fs.writeFileSync(KEYS_FILE, JSON.stringify(collected, null, 1));
+        console.log('[KEY] 捕获第 ' + collected.length + ' 把: ' + key.substring(0, 12) + '...');
+        setStatus(collected.length === 1 ? 'captured' : ('collecting:' + collected.length));
       }
     }
     try {
@@ -171,9 +175,14 @@ async function main() {
     await sleep(200);
   }
 
-  console.log('[KEY] 获取超时');
-  setStatus('timeout_poll');
   try { api.cleanup(); } catch (e) {}
+  if (collected.length > 0) {
+    console.log('[KEY] 扫描结束，共捕获 ' + collected.length + ' 把密钥 -> ' + KEYS_FILE);
+    setStatus('collected:' + collected.length);
+    process.exit(0);
+  }
+  console.log('[KEY] 获取超时（0 把）');
+  setStatus('timeout_poll');
   process.exit(1);
 }
 
