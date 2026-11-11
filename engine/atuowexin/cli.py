@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -23,12 +24,15 @@ from . import __version__, config as config_module, isolate, paths
 from .backends import BackendError, build_backend
 from .doctor import run_doctor
 from .extract import export_conversation, export_markdown_bundle, sync
+from .render import RenderError
 from .model import Conversation, format_ts
 from .store import Store, open_store
 
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
+#: 需要用户动手（目前只有「去微信完成登录」）。上层看到它就该提示用户，而不是重试。
+EXIT_NEEDS_USER = 3
 
 PROG = "atuowexin"
 
@@ -53,7 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
 	common.add_argument("--config", default=argparse.SUPPRESS, help="配置文件路径（默认 ~/.atuowexin/config.json）")
 	common.add_argument("--workdir", default=argparse.SUPPRESS, help="工作目录（覆盖配置）")
 	common.add_argument(
-		"--backend", default=argparse.SUPPRESS, choices=["auto", "chatlog", "decrypted_sqlite", "mock"], help="强制指定读取后端"
+		"--backend",
+		default=argparse.SUPPRESS,
+		choices=["auto", "chatlog", "wcdb", "decrypted_sqlite", "mock"],
+		help="强制指定读取后端（wcdb = 让 WCDB.dll 自己开库，需要参考工具与密钥）",
 	)
 	common.add_argument("--db-root", default=argparse.SUPPRESS, help="已解密数据目录（覆盖 backend.decrypted_sqlite.root）")
 	common.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="以 JSON 输出结果（stdout 只输出一个 JSON 对象）")
@@ -117,7 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
 	export_parser.add_argument("--limit", type=int, default=0, help="--all 时最多导出多少个会话（0=全部）")
 	export_parser.add_argument("--no-combined", action="store_true", help="--all 时不生成合订本，只出总览 + 每会话文件")
 	export_parser.add_argument("--out", help="输出目录（默认 <workdir>/exports）")
-	export_parser.add_argument("--formats", default="jsonl,csv,md")
+	export_parser.add_argument(
+		"--formats",
+		default="jsonl,csv,md",
+		help="逗号分隔的输出格式：jsonl,csv,md,txt,html,xlsx,pdf（txt/html 零依赖；xlsx 需 openpyxl；pdf 需 fpdf2）",
+	)
 	export_parser.add_argument("--redacted", action="store_true")
 
 	watch_parser = sub.add_parser("watch", help="定时自动读取（只做增量摘录，不发送、不调用模型）", parents=[common])
@@ -138,8 +149,12 @@ def build_parser() -> argparse.ArgumentParser:
 	deps_parser.add_argument("action", nargs="?", choices=["status", "install", "dir"], default="status")
 	deps_parser.add_argument("package", nargs="*", help="要安装的组件（zstandard / pillow），默认全部")
 
-	key_parser = sub.add_parser("key", help="密钥工具：从运行中的微信进程内存里自动提取解密密钥（只读扫描）", parents=[common])
-	key_parser.add_argument("action", choices=["find", "ensure"], help="ensure：先看有没有 key，缺了才去读（推荐）；find：无条件扫一次")
+	key_parser = sub.add_parser("key", help="密钥工具：校验、扫描或显式启动期捕获解密密钥", parents=[common])
+	key_parser.add_argument(
+		"action",
+		choices=["find", "ensure", "capture", "auto"],
+		help="ensure：先看有没有 key；find：无条件扫一次；capture：启动期 Hook 捕获；auto：关微信→起 Hook→拉起微信→点登录→取 key 一条龙",
+	)
 	key_parser.add_argument("--root", default="", help="**加密**库目录（db_storage）；省略则自动探测本机微信数据目录")
 	key_parser.add_argument("--out", default="", help="keymap.json 输出路径（默认 <atuowexin home>/keymap.json）")
 	key_parser.add_argument("--version", dest="sqlcipher_version", type=int, choices=[3, 4], default=4)
@@ -155,6 +170,18 @@ def build_parser() -> argparse.ArgumentParser:
 	key_parser.add_argument("--window-mb", type=float, default=0.0, help="每个路标/锚点周围扫多少 MB（默认 2）")
 	key_parser.add_argument("--check-only", action="store_true", help="ensure 时只检查不提取（用于 doctor/CI 里判断密钥是否齐备）")
 	key_parser.add_argument("--no-write", action="store_true", help="ensure 时提取到了也不写 keymap.json")
+	key_parser.add_argument("--timeout", type=float, default=120.0, help="capture 等待捕获的秒数（默认 120）")
+	key_parser.add_argument(
+		"--login-wait",
+		type=float,
+		default=40.0,
+		help="微信起来后等用户登录的秒数（默认 40）；超时立刻返回 stage=login_required，退出码 3",
+	)
+	key_parser.add_argument("--exe", default="", help="auto 用：微信可执行文件路径（默认自动找）")
+	key_parser.add_argument("--keep-open", action="store_true", help="auto 用：微信正在跑时不要关它（会直接返回 wechat_must_close）")
+	key_parser.add_argument("--no-auto-click", action="store_true", help="auto 用：不要自动点「进入微信」")
+	key_parser.add_argument("--node", default="", help="capture 使用的 node 可执行文件")
+	key_parser.add_argument("--dll", default="", help="capture 使用的 wx_key.dll 路径或目录")
 
 	return parser
 
@@ -403,7 +430,11 @@ def cmd_export(args: argparse.Namespace) -> int:
 		formats = tuple(item.strip() for item in str(args.formats or "jsonl,csv,md").split(",") if item.strip())
 		conversation = _resolve_conversation(store, args.conversation)
 		out_dir = Path(args.out) if args.out else paths.exports_root(config["workdir"])
-		result = export_conversation(store, conversation, out_dir, formats=formats, redacted=args.redacted)
+		try:
+			result = export_conversation(store, conversation, out_dir, formats=formats, redacted=args.redacted)
+		except RenderError as error:
+			# 可选依赖缺失（xlsx/pdf）时给一条能照着做的命令，而不是抛栈
+			raise CliError(str(error)) from error
 	payload = {"conversation": conversation.to_dict(), **result}
 	_emit(args, payload, f"已导出 {result['messages']} 条到 {result['dir']}\n" + "\n".join(f"- {item}" for item in result["files"]))
 	return EXIT_OK
@@ -491,6 +522,60 @@ def cmd_key(args: argparse.Namespace) -> int:
 	这样密钥不会顺着终端日志 / 会话记录到处跑。
 	"""
 	from . import keyfinder
+
+	if args.action == "auto":
+		# 一条龙：关微信 -> 起 Hook -> 拉起微信 -> 点登录 -> 取 key -> WCDB 校验
+		from .autopilot import bootstrap
+
+		root = Path(args.root).expanduser() if args.root else _detect_encrypted_root()
+		if root is None or not str(root):
+			raise CliError("没有指定 --root，也没能自动探测到加密库目录。请用 --root 指向 db_storage。")
+		out = Path(args.out).expanduser() if args.out else paths.atuowexin_home() / "keymap.json"
+		pilot = bootstrap(
+			root=root,
+			keymap_path=out,
+			workdir=_load_config(args).get("workdir"),
+			exe=args.exe,
+			keep_open=args.keep_open,
+			auto_click=not args.no_auto_click,
+			login_wait=args.login_wait,
+			timeout=args.timeout,
+			progress=_progress(args),
+		)
+		payload = pilot.to_dict(show_key=args.show_keys)
+		_emit(args, payload, pilot.message or ("就绪" if pilot.ok else "未完成"))
+		if pilot.ok:
+			return EXIT_OK
+		if pilot.stage == "login_required" or pilot.user_action == "login_wechat":
+			return EXIT_NEEDS_USER
+		return EXIT_ERROR
+
+	if args.action == "capture":
+		from .capture import capture_key
+		root = Path(args.root).expanduser() if args.root else _detect_encrypted_root()
+		if root is None or not str(root):
+			raise CliError("没有指定 --root，也没能自动探测到加密库目录。请用 --root 指向 db_storage。")
+		out = Path(args.out).expanduser() if args.out else paths.atuowexin_home() / "keymap.json"
+		result = capture_key(
+			root,
+			out,
+			workdir=_load_config(args).get("workdir"),
+			dll=args.dll or None,
+			node=args.node or None,
+			version=args.sqlcipher_version,
+			timeout=args.timeout,
+			login_wait=args.login_wait,
+			write=not args.no_write,
+			progress=_progress(args),
+		)
+		payload = result.to_dict(show_key=args.show_keys)
+		_emit(args, payload, result.error or ("已捕获并写入 keymap" if result.ok else "捕获未完成"))
+		if result.ok:
+			return EXIT_OK
+		if result.stage == "login_required":
+			# 明确告诉上层「卡在用户登录」，不是失败、不该盲目重试
+			return EXIT_NEEDS_USER
+		return EXIT_ERROR
 
 	root = Path(args.root).expanduser() if args.root else _detect_encrypted_root()
 	if root is None or not str(root):

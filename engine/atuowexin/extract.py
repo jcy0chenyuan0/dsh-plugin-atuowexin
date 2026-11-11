@@ -253,10 +253,21 @@ def export_conversation(
 	:param store: 归一化数据库。
 	:param conversation: 目标会话。
 	:param out_dir: 输出目录（会创建 ``<slug>/`` 子目录）。
-	:param formats: 需要的格式，支持 ``jsonl`` / ``csv`` / ``md``。
+	:param formats: 需要的格式，支持 ``jsonl`` / ``csv`` / ``md`` / ``txt`` / ``html`` /
+		``xlsx`` / ``pdf``（后四种由 :mod:`atuowexin.render` 渲染）。
 	:param redacted: 是否对正文脱敏（给别人看/喂云端时用）。
 	:return: ``{"dir": ..., "files": [...], "messages": N}``。
 	"""
+	allowed = {"jsonl", "csv", "md", "txt", "html", "xlsx", "pdf"}
+	ordered: list[str] = []
+	for item in formats:
+		fmt = str(item).strip().lower()
+		if not fmt or fmt in ordered:
+			continue
+		if fmt not in allowed:
+			raise ValueError(f"不支持的导出格式：{fmt}（可选：{', '.join(sorted(allowed))}）")
+		ordered.append(fmt)
+	formats = tuple(ordered)
 	target = Path(out_dir) / conversation.slug
 	target.mkdir(parents=True, exist_ok=True)
 	messages = store.messages(conversation.id)
@@ -306,6 +317,14 @@ def export_conversation(
 			lines.append(f"- {line}")
 		path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 		written.append(str(path))
+
+	# 多格式渲染（txt / html / xlsx / pdf）：版式参考 WeChat-Export-Tool 的 exporters/，
+	# 依赖策略见 render.py —— 缺可选依赖时抛 RenderError，不静默降级。
+	from . import render as _render
+
+	for fmt in formats:
+		if fmt in _render.SUPPORTED:
+			written.append(_render.export_format(fmt, messages, conversation, target, redacted=redacted))
 
 	profile = {
 		"conversation": conversation.to_dict(),

@@ -15,8 +15,9 @@ from .base import Backend, BackendError, BaseBackend
 from .chatlog_http import ChatlogBackend
 from .decrypted_sqlite import DecryptedSqliteBackend
 from .mock import MockBackend
+from .wcdb_server import WcdbBackend
 
-BACKEND_NAMES = ("auto", "chatlog", "decrypted_sqlite", "mock")
+BACKEND_NAMES = ("auto", "chatlog", "wcdb", "decrypted_sqlite", "mock")
 
 
 def build_backend(config: dict[str, Any], *, name: str | None = None) -> tuple[Backend, str]:
@@ -37,6 +38,12 @@ def build_backend(config: dict[str, Any], *, name: str | None = None) -> tuple[B
 		if not health.get("ok"):
 			raise BackendError(f"chatlog 后端不可用：{health.get('detail')}")
 		return backend, "显式指定 chatlog"
+	if requested == "wcdb":
+		backend = WcdbBackend(settings.get("wcdb") or {})
+		health = backend.health()
+		if not health.get("ok"):
+			raise BackendError(f"WCDB 后端不可用：{health.get('detail')}")
+		return backend, "显式指定 wcdb（由 WCDB.dll 自己开库）"
 	if requested == "decrypted_sqlite":
 		return DecryptedSqliteBackend(settings.get("decrypted_sqlite") or {}), "显式指定 decrypted_sqlite"
 	if requested != "auto":
@@ -53,6 +60,16 @@ def _auto_backend(settings: dict[str, Any]) -> tuple[Backend, str]:
 	if health.get("ok"):
 		return chatlog, f"自动探测命中 chatlog（{chatlog.base_url}）"
 	reasons.append(f"chatlog 不可用：{health.get('detail')}")
+
+	# 自动探测只试一次，避免 doctor 卡在重试上（显式 --backend wcdb 才用完整重试）
+	auto_wcdb = dict(settings.get("wcdb") or {})
+	auto_wcdb.setdefault("retries", 1)
+	wcdb = WcdbBackend(auto_wcdb)
+	wcdb_health = wcdb.health()
+	if wcdb_health.get("ok"):
+		return wcdb, f"自动探测命中 WCDB（{wcdb_health.get('detail')}）"
+	wcdb.close()
+	reasons.append(f"WCDB 不可用：{wcdb_health.get('detail')}")
 
 	root = str((settings.get("decrypted_sqlite") or {}).get("root") or "").strip()
 	if root:

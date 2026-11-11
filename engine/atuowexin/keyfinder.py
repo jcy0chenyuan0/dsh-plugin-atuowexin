@@ -55,6 +55,7 @@ __all__ = [
     "KeyCandidate",
     "FindKeyResult",
     "EnsureResult",
+    "KeyValidationResult",
     "MemoryReader",
     "Win32Memory",
     "NullMemory",
@@ -63,6 +64,8 @@ __all__ = [
     "find_keys",
     "ensure_keys",
     "watch_keys",
+    "validate_raw_key",
+    "save_validated_key",
     "load_keymap",
     "save_keymap",
 ]
@@ -147,6 +150,50 @@ class FindKeyResult:
     def keymap(self) -> dict[str, str]:
         """``{salt_hex: key_hex}``，可直接写进 keymap.json。"""
         return {item.salt: item.key for item in self.found}
+
+
+@dataclass
+class KeyValidationResult:
+    """一个 raw key 对目标库逐库 HMAC 校验后的结果。
+
+    ``ok`` 表示至少命中了一个库；``all_matched`` 表示目标目录中的每个
+    可读 SQLCipher 库都命中了。调用方只能使用 ``keymap`` 中的条目落盘，
+    因为这里已经对每个条目执行了第 1 页 HMAC 校验。
+    """
+
+    ok: bool = False
+    all_matched: bool = False
+    key: str = ""
+    version: int = 4
+    databases: int = 0
+    keymap: dict[str, str] = field(default_factory=dict)
+    matched_dbs: list[str] = field(default_factory=list)
+    mismatched_dbs: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    detail: str = ""
+    written: bool = False
+
+    def to_dict(self, *, show_key: bool = False) -> dict[str, Any]:
+        """转成 JSON 安全结果，默认不回显完整密钥。"""
+        payload: dict[str, Any] = {
+            "ok": self.ok,
+            "all_matched": self.all_matched,
+            "version": self.version,
+            "databases": self.databases,
+            "matched": len(self.keymap),
+            "matched_dbs": self.matched_dbs[:50],
+            "mismatched_dbs": self.mismatched_dbs[:50],
+            "errors": self.errors[:50],
+            "detail": self.detail,
+            "written": self.written,
+            "key_prefix": (self.key[:8] + "…") if self.key else "",
+        }
+        if show_key:
+            payload["key"] = self.key
+            payload["keymap"] = dict(self.keymap)
+        else:
+            payload["keymap"] = {salt: value[:8] + "…" for salt, value in self.keymap.items()}
+        return payload
 
 
 # --------------------------------------------------------------------------- #
@@ -477,6 +524,105 @@ def _collect_databases(root: str | Path) -> list[Path]:
     if base.is_file():
         return [base]
     return sorted(path for path in base.rglob("*.db") if path.is_file() and not path.name.endswith(("-wal", "-shm")))
+
+
+def _normalise_raw_key(value: str | bytes) -> tuple[str, bytes] | None:
+    """解析一个 raw key，返回规范化 hex 与 bytes；格式不对返回 ``None``。"""
+    if isinstance(value, bytes):
+        raw = bytes(value)
+        text = raw.hex()
+    else:
+        text = str(value or "").strip()
+        if text.lower().startswith("0x"):
+            text = text[2:]
+        if len(text) != 64:
+            return None
+        try:
+            raw = bytes.fromhex(text)
+        except ValueError:
+            return None
+    if len(raw) != 32:
+        return None
+    return raw.hex(), raw
+
+
+def validate_raw_key(
+    root: str | Path,
+    key: str | bytes,
+    *,
+    version: int = 4,
+) -> KeyValidationResult:
+    """把一个捕获/输入的 raw key 对 ``root`` 下每个库逐一做 HMAC 校验。
+
+    这是捕获流程唯一允许产生 keymap 条目的入口。验证采用与 SQLCipher
+    解密相同的第 1 页 HMAC 判据，绝不依据 salt、文件名或长度猜测。
+    ``ok`` 只表示至少一个库匹配；调用方可用 ``all_matched`` 判断是否覆盖
+    了整个目录。即使只有部分库匹配，返回的 ``keymap`` 也只包含通过校验的
+    条目；全不匹配时该映射为空，适合直接阻止落盘。
+    """
+    result = KeyValidationResult(version=version)
+    normalised = _normalise_raw_key(key)
+    if normalised is None:
+        result.detail = "密钥必须是 64 位十六进制 raw key（32 字节）"
+        return result
+    key_hex, raw_key = normalised
+    result.key = key_hex
+
+    databases = _collect_databases(root)
+    result.databases = len(databases)
+    if not databases:
+        result.detail = f"{root} 下没有找到任何 .db"
+        return result
+
+    pages: list[_PageOne] = []
+    for db in databases:
+        try:
+            page = _read_page_one(db, version)
+        except (OSError, ValueError) as error:
+            result.errors.append(f"{db.name}: {error}")
+            continue
+        pages.append(page)
+        if _verify(page, raw_key, version):
+            result.keymap[page.salt_hex] = key_hex
+            result.matched_dbs.append(str(page.path))
+        else:
+            result.mismatched_dbs.append(str(page.path))
+
+    result.ok = bool(result.keymap)
+    result.all_matched = bool(pages) and len(result.keymap) == len(pages) and not result.errors
+    if not result.keymap:
+        # 这是验收里明确要求的文案；不要把错误 key 当成一次成功捕获。
+        names = [Path(item).name for item in result.mismatched_dbs[:10]]
+        suffix = f"：{'、'.join(names)}" if names else ""
+        result.detail = f"key 与这些库都不匹配{suffix}"
+    elif result.all_matched:
+        result.detail = f"key 通过全部 {len(pages)} 个库的 HMAC 校验"
+    else:
+        result.detail = (
+            f"key 通过 {len(result.keymap)}/{len(pages)} 个库的 HMAC 校验，"
+            f"其余库不匹配（不会写入未通过的条目）"
+        )
+    return result
+
+
+def save_validated_key(
+    root: str | Path,
+    key: str | bytes,
+    keymap_path: str | Path,
+    *,
+    version: int = 4,
+    merge: bool = True,
+) -> KeyValidationResult:
+    """校验 raw key 并只把通过 HMAC 的 salt→key 条目写入 keymap。
+
+    ``keymap_path`` 在全不匹配、格式错误或没有可读数据库时不会创建，
+    这是防止「捕获成功但写入假 key」的持久化边界。
+    """
+    result = validate_raw_key(root, key, version=version)
+    if result.keymap:
+        save_keymap(keymap_path, result.keymap, merge=merge)
+        result.written = True
+    return result
 
 
 def find_keys(

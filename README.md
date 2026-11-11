@@ -1,7 +1,10 @@
-# dsh-plugin-atuowexin v0.5.0（只读版）—— 微信本地聊天记录摘录
+# dsh-plugin-atuowexin v0.6.0 —— 微信本地聊天记录摘录
 
-> **只读**：解密 → 完整摘录 → 会话隔离 → 导出。不含发送消息、不注入微信进程、不调用云端模型。
-> 交付形态：DSH 插件（5 个工具）+ Python 引擎（只用标准库）+ 命令行 CLI。
+> **读取侧只读**：解密 → 完整摘录 → 会话隔离 → 导出，不写微信库、不发送消息、不调用云端模型。
+> 密钥捕获是显式 opt-in：启动期用 `wx_key.dll` Hook 截 `SetDBKey`；校验口径是 **WCDB 试开**（能开库+能列会话才算可用），不再用 SQLCipher 的 HMAC 判据——4.1.10+ 的库是 WCDB 自有封装，HMAC 会误判。
+>
+> 一条命令跑完：`atuowexin key auto`（关微信 → 起 Hook → 拉起微信 → 点登录 → 取 key → 校验）。需要用户登录时立刻返回 `stage=login_required`（退出码 3），上层据此提示用户去点「进入微信」，而不是重试。
+> 交付形态：DSH 插件（7 个工具）+ Python 引擎 + 命令行 CLI。
 
 ---
 
@@ -12,11 +15,11 @@
 | 完整摘录 | 后端（本机 chatlog / 已解密 SQLite / 合成）→ 归一化 SQLite + 每会话 `messages.jsonl`；默认摘**全部会话、不限条数**，保留原始字段与媒体引用 | `engine/atuowexin/extract.py`、`backends/` |
 | 解密（含 WAL） | 用你自己的密钥把 SQLCipher 库解成明文；**自动合并 `-wal` 里尚未 checkpoint 的已提交数据**，并忽略 SQLite 重置后的残留帧（照抄会写坏主库） | `engine/atuowexin/sqlcipher.py`、`ingest.py` |
 | 会话隔离 | 三层：目录（`conversations/<slug>/`）、读写（跨会话写入抛 `IsolationError`）、上下文（查询 API 形状上没有"查全部"） | `isolate.py`、`store.py` |
-| 导出 | 单会话 jsonl/csv/md；`export --all` 出「总览 + 每会话一个 Markdown + 合订本」，可 `--redacted` 打码 | `extract.py` |
+| 导出 | 单会话支持 jsonl/csv/md/txt/html/xlsx/pdf；`export --all` 出「总览 + 每会话一个 Markdown + 合订本」，可 `--redacted` 打码 | `extract.py`、`render.py` |
 | 环境体检 | `doctor` 逐项告诉你缺什么、下一步做什么（含 WAL 待合并数据、可选依赖） | `doctor.py` |
-| 自动提取密钥 | **先看有没有、缺了才读**：从运行中的微信进程内存里找出 SQLCipher 密钥（只读扫描 + 逐候选 HMAC 校验），合并写进 keymap.json | `keyfinder.py` |
+| 密钥处理 | `key ensure/find` 做只读内存扫描；`key capture` 在启动期显式调用 Hook 捕获 64 位 key，逐库 HMAC 校验后合并写进 keymap.json | `keyfinder.py`、`capture.py`、`tools/capture_key.js` |
 
-**明确不做**（v0.3.0 起从代码里删掉，不是靠配置关掉）：发送消息、UI 自动化、微信进程注入、内存扫描密钥、DeepSeek/任何云端模型调用。
+**明确不做**：发送消息、UI 自动化、DeepSeek/任何云端模型调用。普通读取、解密和导出不会写微信库；只有用户明确调用 `key capture` 时才会执行启动期 Hook。
 
 ---
 
@@ -61,6 +64,7 @@ workspaces   列出会话隔离工作区
 deps         status | install | dir（可选依赖）
 key ensure   先看密钥有没有，缺了才去读（--check-only 只检查；--watch 轮询）
 key find     无条件扫一次，提取解密密钥（只读扫描）
+key capture  启动期 Hook 捕获密钥（显式 opt-in；逐库 HMAC 校验后才写 keymap）
 ```
 
 配置：`%USERPROFILE%\.atuowexin\config.json`（`config init` 生成模板）。0.3.0 起配置里**没有 `llm` 与 `send` 段**。
