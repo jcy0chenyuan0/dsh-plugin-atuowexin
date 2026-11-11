@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import time
@@ -90,7 +91,13 @@ class WcdbBackend:
 		self.reference_root = Path(settings.get("reference_root") or _DEFAULT_REFERENCE)
 		self.script = Path(settings.get("script") or _default_script())
 		self.data_dir = Path(str(settings.get("data_dir"))).expanduser() if settings.get("data_dir") else _default_data_dir()
-		self.node = str(settings.get("node") or _DEFAULT_NODE)
+		configured_node = str(settings.get("node") or "").strip()
+		if configured_node:
+			self.node = configured_node
+		elif _DEFAULT_NODE.is_file():
+			self.node = str(_DEFAULT_NODE)
+		else:
+			self.node = shutil.which("node") or shutil.which("node.exe") or str(_DEFAULT_NODE)
 		self.key = str(settings.get("key") or "").strip()
 		self.key_file = Path(settings["key_file"]).expanduser() if settings.get("key_file") else None
 		self.self_wxid = str(settings.get("self_wxid") or "").strip()

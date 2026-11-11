@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-atuowexin",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "description": "微信本地聊天记录只读摘录插件（DSH bundle）：解密 → 完整摘录 → 会话隔离 → 导出。不含发送、注入、云端模型。",
   "type": "module",
@@ -21,7 +21,10 @@
     "install.mjs",
     "LICENSE",
     "bootstrap.ps1",
-    "lib/bootstrap.js"
+    "lib/bootstrap.js",
+    "lib/core.js",
+    "engine/tools",
+    "engine/tools/frida"
   ],
   "dsh": {
     "bundle": {
